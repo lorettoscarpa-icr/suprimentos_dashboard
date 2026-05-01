@@ -308,7 +308,7 @@
     </div>
     <div class="section-title">Resumo do Catálogo Ativo<div class="line"></div><span class="ornament">✦</span></div>
     <div class="table-wrap">
-      <table><thead><tr><th>Fornecedor</th><th>Item</th><th>Qtd.</th><th style="text-align:right">R$ Unit.</th><th style="text-align:right">R$ Total</th><th style="text-align:right">Duração</th><th style="text-align:right">R$/mês</th><th>Status</th></tr></thead>
+      <table><thead><tr><th>Fornecedor</th><th>Item</th><th>Qtd.</th><th style="text-align:right">R$ Unit.</th><th style="text-align:right">R$ Total</th><th style="text-align:right">R$/mês</th><th>Próxima Reposição</th></tr></thead>
       <tbody id="tabelaCatalogo"></tbody></table>
     </div>
   </div>
@@ -443,11 +443,11 @@ const CATALOGO = [
   { id:7,  forn:"Embalagens Eldorado", item:"Pano Limpeza Rolo Wiper Maxwipe 88 Panos",      qtd:1,    total:88.00,  meses:5  },
   { id:8,  forn:"Embalagens Eldorado", item:"Saco de Lixo 40 L – 100 unid.",                qtd:100,  total:22.00,  meses:2  },
   { id:9,  forn:"Embalagens Eldorado", item:"Saco de Lixo 100 L – 100 unid.",               qtd:100,  total:65.00,  meses:3  },
-  { id:10, forn:"Supermercado Tático", item:"Papel Higiênico Folha Dupla 30m – 10 pct",     qtd:10,   total:129.90, meses:2  },
-  { id:11, forn:"Supermercado Tático", item:"Detergente 500 ml – 24 unid.",                 qtd:24,   total:44.88,  meses:3  },
-  { id:12, forn:"Supermercado Tático", item:"Desinfetante 2 L – 7 unid.",                   qtd:7,    total:34.93,  meses:3  },
-  { id:13, forn:"Supermercado Tático", item:"Água Sanitária 5 L – 3 unid.",                 qtd:3,    total:26.85,  meses:2  },
-  { id:14, forn:"Supermercado Tático", item:"Sabão em Pó 2 kg – 7 unid.",                   qtd:7,    total:132.65, meses:3  },
+  { id:10, forn:"Supermercado Tático", item:"Papel Higiênico Folha Dupla 30m – 10 pct",     qtd:10,   total:129.90, meses:5  },
+  { id:11, forn:"Supermercado Tático", item:"Detergente 500 ml – 24 unid.",                 qtd:24,   total:44.88,  meses:12 },
+  { id:12, forn:"Supermercado Tático", item:"Desinfetante 2 L – 7 unid.",                   qtd:7,    total:34.93,  meses:3.5},
+  { id:13, forn:"Supermercado Tático", item:"Água Sanitária 5 L – 3 unid.",                 qtd:3,    total:26.85,  meses:6  },
+  { id:14, forn:"Supermercado Tático", item:"Sabão em Pó 2 kg – 7 unid.",                   qtd:7,    total:132.65, meses:7  },
 ];
 
 const FORN_CORES = {
@@ -640,15 +640,55 @@ function ultimaCompra(itemId) {
   return arr.length ? arr.sort((a,b)=>new Date(b.data)-new Date(a.data))[0] : null;
 }
 
+// Calcula a duração base em dias para um item
+// Com 1 compra: usa estimativa do catálogo × proporcional à quantidade
+// Com 2+ compras: usa a média dos intervalos reais entre compras × proporcional
+function duracaoBaseDias(cat) {
+  const compras = historico
+    .filter(h => h.itemId === cat.id)
+    .sort((a,b) => new Date(a.data) - new Date(b.data)); // ordenado do mais antigo ao mais novo
+
+  if(compras.length === 0) return null;
+
+  const uc = compras[compras.length - 1]; // última compra
+  const proporcao = uc.qtdComprada / cat.qtd;
+
+  if(compras.length === 1) {
+    // Apenas 1 compra: estimativa do catálogo × proporcional
+    return Math.round(cat.meses * 30 * proporcao);
+  }
+
+  // 2+ compras: calcula média dos intervalos reais entre compras consecutivas
+  let somaIntervalos = 0;
+  let somaQtds = 0;
+  for(let i = 1; i < compras.length; i++) {
+    const anterior = new Date(compras[i-1].data + 'T12:00:00');
+    const atual    = new Date(compras[i].data    + 'T12:00:00');
+    const intervalo = Math.round((atual - anterior) / 86400000); // em dias
+    // Pondera pelo intervalo da quantidade de referência do catálogo
+    // (normaliza: se comprou mais, deveria durar mais proporcionalmente)
+    const qtdRef = compras[i-1].qtdComprada; // quantidade que gerou o intervalo
+    somaIntervalos += intervalo;
+    somaQtds += qtdRef;
+  }
+
+  // Duração média real por unidade de referência do catálogo
+  const mediaIntervalo = somaIntervalos / (compras.length - 1);  // dias médios entre compras
+  const mediaQtd       = somaQtds       / (compras.length - 1);  // qtd média que gerou o intervalo
+
+  // Ajusta para a quantidade da última compra
+  const duracaoAjustada = (mediaIntervalo / mediaQtd) * uc.qtdComprada;
+
+  return Math.round(duracaoAjustada);
+}
+
 function proxReposicao(cat) {
   const uc = ultimaCompra(cat.id);
   if(!uc) return null;
-  // Duração proporcional à quantidade comprada vs quantidade de referência do catálogo
-  const proporcao = uc.qtdComprada / cat.qtd;
-  const duracaoReal = cat.meses * proporcao;
-  const d = new Date(uc.data+'T12:00:00');
-  // Converte meses decimais em dias para maior precisão
-  d.setDate(d.getDate() + Math.round(duracaoReal * 30));
+  const dias = duracaoBaseDias(cat);
+  if(!dias) return null;
+  const d = new Date(uc.data + 'T12:00:00');
+  d.setDate(d.getDate() + dias);
   return d;
 }
 
@@ -659,42 +699,80 @@ function diasAteReposicao(cat) {
 }
 
 function pillStatus(cat) {
-  const d = diasAteReposicao(cat);
-  const uc = ultimaCompra(cat.id);
-  if(d===null)  return '<span class="pill pill-pend">Aguardando 1ª compra</span>';
-  if(d<0)       return '<span class="pill pill-due">Vencido há '+Math.abs(d)+'d</span>';
-  if(d<=14)     return '<span class="pill pill-warn">Repor em '+d+'d</span>';
-  // Mostrar em dias ou meses dependendo do valor
-  const label = d >= 30 ? Math.round(d/30)+'m '+( d%30>0 ? (d%30)+'d' : '') : d+'d';
-  return '<span class="pill pill-ok">OK — '+label.trim()+'</span>';
+  const d   = diasAteReposicao(cat);
+  const pr  = proxReposicao(cat);
+  const nCompras = historico.filter(h=>h.itemId===cat.id).length;
+
+  if(d===null) return '<span class="pill pill-pend">Aguardando 1ª compra</span>';
+
+  // Data formatada da próxima reposição
+  const dataStr = pr ? pr.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric'}) : '';
+  const srcIcon = nCompras >= 2
+    ? '<span title="Prazo calculado pelo histórico real" style="opacity:.6;margin-left:3px;font-size:9px">✓</span>'
+    : '<span title="Prazo estimado — será ajustado após 2ª compra" style="opacity:.5;margin-left:3px;font-size:9px">~</span>';
+
+  if(d<0)   return `<span class="pill pill-due">Vencido ${Math.abs(d)}d atrás · ${dataStr}</span>`;
+  if(d<=7)  return `<span class="pill pill-due">Repor urgente · ${dataStr}</span>`;
+  if(d<=14) return `<span class="pill pill-warn">Repor até ${dataStr}</span>`;
+  return `<span class="pill pill-ok">Repor em ${dataStr}${srcIcon}</span>`;
 }
 
 // ════════════════════════════════════════════
 //  RENDER KPIs
 // ════════════════════════════════════════════
 function renderKPIs() {
-  const totalEst  = CATALOGO.reduce((s,c)=>s+c.total,0);
-  const totalReal = historico.reduce((s,h)=>s+h.totalPago,0);
-  const totalMes  = CATALOGO.reduce((s,c)=>s+(c.total/c.meses),0);
-  const alertas   = CATALOGO.filter(c=>{ const d=diasAteReposicao(c); return d!==null&&d<=14; }).length;
-  const varPct    = totalReal>0 ? ((totalReal-totalEst)/totalEst*100).toFixed(1) : null;
+  const mes    = getMesFiltro();
+  const ano    = new Date().getFullYear();
+  const hFilt  = getHistoricoFiltrado();
+  const mLabel = mes ? ['','Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'][mes] : null;
+
+  const totalReal  = hFilt.reduce((s,h)=>s+h.totalPago,0);
+  const totalGeral = historico.reduce((s,h)=>s+h.totalPago,0);
+  const alertas    = CATALOGO.filter(c=>{ const d=diasAteReposicao(c); return d!==null&&d<=14; }).length;
+
+  // Previsão próximo mês: soma dos itens com reposição prevista no próximo mês
+  const hoje      = new Date();
+  const proxMesNum = hoje.getMonth()+2 > 12 ? 1 : hoje.getMonth()+2;
+  const proxAno    = hoje.getMonth()+2 > 12 ? ano+1 : ano;
+  const proximoMes = ['','Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'][proxMesNum];
+
+  // Itens cuja próxima reposição cai dentro do próximo mês
+  const itensProxMes = CATALOGO.filter(cat => {
+    const pr = proxReposicao(cat);
+    if(!pr) return false;
+    return pr.getMonth()+1 === proxMesNum && pr.getFullYear() === proxAno;
+  });
+
+  const previsaoValor = itensProxMes.reduce((s, cat) => {
+    const uc = ultimaCompra(cat.id);
+    const precoUnit = uc ? uc.unitPago : unitario(cat);
+    return s + (precoUnit * cat.qtd);
+  }, 0);
+
+  const previsaoLabel = itensProxMes.length > 0
+    ? itensProxMes.length + ' item(s) a repor'
+    : 'Nenhum item previsto';
 
   document.getElementById('kpiGrid').innerHTML = `
     <div class="kpi-card">
-      <div class="kpi-label">Investimento Inicial (Catálogo)</div>
-      <div class="kpi-value gold">${brl(totalEst)}</div>
-      <div class="kpi-sub">${CATALOGO.length} itens cadastrados</div>
+      <div class="kpi-label">Gasto Total Acumulado</div>
+      <div class="kpi-value gold">${brl(totalGeral)}</div>
+      <div class="kpi-sub">${historico.length} compra(s) no total</div>
+    </div>
+    <div class="kpi-card" style="border-color:${mLabel?'rgba(201,168,76,.5)':'var(--border)'}">
+      <div class="kpi-label">${mLabel ? 'Gasto em '+mLabel : 'Selecione um mês para filtrar'}</div>
+      <div class="kpi-value ${mLabel?'gold':''}">${mLabel ? brl(totalReal) : '—'}</div>
+      <div class="kpi-sub">${mLabel ? hFilt.length+' compra(s) em '+mLabel : 'Use o seletor no topo'}</div>
     </div>
     <div class="kpi-card">
-      <div class="kpi-label">Total Gasto Real</div>
-      <div class="kpi-value ${totalReal>totalEst?'red':'green'}">${brl(totalReal)}</div>
-      <div class="kpi-sub">${historico.length} compra(s) registrada(s)</div>
-      ${varPct!==null?`<span class="kpi-badge ${parseFloat(varPct)>0?'badge-alert':'badge-ok'}">${varPct>0?'+':''}${varPct}% vs estimado</span>`:''}
-    </div>
-    <div class="kpi-card">
-      <div class="kpi-label">Custo Mensal Estimado</div>
-      <div class="kpi-value">${brl(totalMes)}</div>
-      <div class="kpi-sub">média ponderada pela duração</div>
+      <div class="kpi-label">Previsão de Gastos — ${proximoMes}</div>
+      <div class="kpi-value ${previsaoValor>0?'':''}">
+        ${previsaoValor > 0 ? brl(previsaoValor) : '—'}
+      </div>
+      <div class="kpi-sub">${previsaoLabel}</div>
+      ${previsaoValor > 0
+        ? `<span class="kpi-badge badge-warn" style="cursor:default" title="${itensProxMes.map(c=>c.item).join(', ')}">Ver itens ↓</span>`
+        : ''}
     </div>
     <div class="kpi-card">
       <div class="kpi-label">Itens p/ Repor em Breve</div>
@@ -705,9 +783,17 @@ function renderKPIs() {
 }
 
 function renderFornecedores() {
-  const total = CATALOGO.reduce((s,c)=>s+c.total,0);
+  const hFilt = getHistoricoFiltrado();
   const ag = {};
-  CATALOGO.forEach(c=>{ ag[c.forn]=(ag[c.forn]||0)+c.total; });
+  // Baseado no gasto REAL das compras registradas, filtrado pelo mês selecionado
+  hFilt.forEach(h=>{ ag[h.forn]=(ag[h.forn]||0)+h.totalPago; });
+  const total = Object.values(ag).reduce((s,v)=>s+v,0);
+
+  if(!total) {
+    document.getElementById('fornList').innerHTML = '<div style="text-align:center;padding:20px;color:var(--cinza-texto);font-size:12px;font-style:italic">Nenhuma compra registrada neste período.</div>';
+    return;
+  }
+
   document.getElementById('fornList').innerHTML = Object.entries(ag).sort((a,b)=>b[1]-a[1]).map(([f,v])=>`
     <div class="forn-item">
       <div class="forn-dot" style="background:${FORN_CORES[f]||'#5a7a6a'}"></div>
@@ -719,32 +805,49 @@ function renderFornecedores() {
 }
 
 function renderChartMensal() {
-  const ano = new Date().getFullYear();
+  const ano       = new Date().getFullYear();
+  const hoje      = new Date().getMonth()+1;
+  const mesFilt   = getMesFiltro();
   const pm = {};
   historico.forEach(h=>{ const d=new Date(h.data+'T12:00:00'); if(d.getFullYear()!==ano) return; const m=d.getMonth()+1; pm[m]=(pm[m]||0)+h.totalPago; });
   const vals=[1,2,3,4,5,6,7,8,9,10,11,12].map(m=>pm[m]||0);
   const max=Math.max(...vals,100);
-  const hoje=new Date().getMonth()+1;
-  document.getElementById('chartMensal').innerHTML=[1,2,3,4,5,6,7,8,9,10,11,12].map((m,i)=>`
-    <div class="chart-bar-col">
-      <div class="chart-bar-val" style="font-size:8px">${vals[i]>0?brl(vals[i]).replace('R$ ',''):'—'}</div>
-      <div class="chart-bar-fill ${m>hoje?'dim':''}" style="height:${Math.max((vals[i]/max)*80,4)}px"></div>
-      <div class="chart-bar-label">${mesLabel(m)}</div>
-    </div>`).join('');
+  document.getElementById('chartMensal').innerHTML=[1,2,3,4,5,6,7,8,9,10,11,12].map((m,i)=>{
+    const selecionado = mesFilt && m===mesFilt;
+    const dim = !selecionado && m>hoje;
+    return `
+    <div class="chart-bar-col" style="${selecionado?'opacity:1':''}" title="${mesLabel(m)}: ${vals[i]>0?brl(vals[i]):'Sem compras'}">
+      <div class="chart-bar-val" style="font-size:8px;${selecionado?'color:var(--dourado)':''}">${vals[i]>0?brl(vals[i]).replace('R$ ',''):'—'}</div>
+      <div class="chart-bar-fill ${dim?'dim':''}" style="height:${Math.max((vals[i]/max)*80,4)}px;${selecionado?'box-shadow:0 0 6px rgba(201,168,76,.6);outline:1px solid var(--dourado)':''};"></div>
+      <div class="chart-bar-label" style="${selecionado?'color:var(--dourado);font-weight:600':''}">${mesLabel(m)}</div>
+    </div>`;
+  }).join('');
 }
 
 function renderTabelaVisao() {
-  document.getElementById('tabelaCatalogo').innerHTML = CATALOGO.map(c=>`
-    <tr>
+  document.getElementById('tabelaCatalogo').innerHTML = CATALOGO.map(c=>{
+    // Sempre usa dados do catálogo — consistentes entre si
+    const unitRef   = unitario(c);   // R$ total ÷ qtd
+    const totalRef  = c.total;       // valor total de referência
+    const rpmRef    = c.total / c.meses;
+
+    // Último preço real pago (só para indicador visual)
+    const uc = ultimaCompra(c.id);
+    const varPct = uc ? ((uc.unitPago - unitRef) / unitRef * 100) : null;
+    const varHtml = varPct !== null && Math.abs(varPct) > 1
+      ? `<span style="font-size:10px;margin-left:4px;color:${varPct>0?'#e57373':'#81c995'}">${varPct>0?'▲':'▼'}${Math.abs(varPct).toFixed(0)}%</span>`
+      : '';
+
+    return `<tr>
       <td class="td-forn"><span class="tag">${c.forn.split(' ')[0]}</span></td>
       <td style="font-size:12px">${c.item}</td>
       <td class="td-num">${c.qtd.toLocaleString('pt-BR')}</td>
-      <td class="td-num">${brl(unitario(c))}</td>
-      <td class="td-num td-gold">${brl(c.total)}</td>
-      <td class="td-num">${c.meses} mes${c.meses>1?'es':''}</td>
-      <td class="td-num">${brl(c.total/c.meses)}</td>
+      <td class="td-num">${brl(unitRef)}${varHtml}</td>
+      <td class="td-num td-gold">${brl(totalRef)}</td>
+      <td class="td-num">${brl(rpmRef)}</td>
       <td>${pillStatus(c)}</td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 }
 
 function renderVisao() {
@@ -759,17 +862,36 @@ function renderVisao() {
 // ════════════════════════════════════════════
 function renderCatalogo() {
   document.getElementById('tabelaCatalogoFull').innerHTML = CATALOGO.map(c=>{
-    const uc=ultimaCompra(c.id);
-    const dias=diasAteReposicao(c);
-    const progPct=dias!==null?Math.max(0,Math.min(100,(dias/(c.meses*30))*100)):100;
-    const progCls=dias===null?'prog-ok':dias<0?'prog-over':dias<14?'prog-warn':'prog-ok';
+    const uc       = ultimaCompra(c.id);
+    const dias     = diasAteReposicao(c);
+    const nCompras = historico.filter(h=>h.itemId===c.id).length;
+    const duracaoDias = duracaoBaseDias(c);
+
+    // Duração base real em meses (para exibição)
+    const duracaoLabel = duracaoDias
+      ? (duracaoDias >= 30
+          ? Math.floor(duracaoDias/30)+'m'+(duracaoDias%30>0?' '+(duracaoDias%30)+'d':'')
+          : duracaoDias+'d')
+      : c.meses+'m (est.)';
+
+    // Fonte da duração
+    const fonteLabel = nCompras >= 2
+      ? '<span style="color:#81c995;font-size:10px;margin-left:4px" title="Calculado com base no histórico real de compras">✓ real</span>'
+      : '<span style="color:var(--cinza-texto);font-size:10px;margin-left:4px" title="Estimativa — será ajustado após a 2ª compra">est.</span>';
+
+    // Barra de progresso baseada na duração real
+    const progPct = (dias!==null && duracaoDias)
+      ? Math.max(0, Math.min(100, (dias/duracaoDias)*100))
+      : 100;
+    const progCls = dias===null?'prog-ok':dias<0?'prog-over':dias<14?'prog-warn':'prog-ok';
+
     return `<tr>
       <td><span style="display:inline-flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:50%;background:${FORN_CORES[c.forn]||'#5a7a6a'}"></span><span class="td-forn">${c.forn}</span></span></td>
       <td style="font-size:12px">${c.item}</td>
       <td class="td-num">${c.qtd.toLocaleString('pt-BR')}</td>
       <td class="td-num">${brl(unitario(c))}</td>
       <td class="td-num td-gold">${brl(c.total)}</td>
-      <td class="td-num">${c.meses}</td>
+      <td class="td-num">${duracaoLabel}${fonteLabel}</td>
       <td class="td-num">${brl(c.total/c.meses)}</td>
       <td class="td-num" style="font-size:11px;color:var(--cinza-texto)">${uc?new Date(uc.data+'T12:00:00').toLocaleDateString('pt-BR'):'—'}</td>
       <td>${pillStatus(c)}<div class="prog-wrap" style="margin-top:5px;width:80px"><div class="prog-bar ${progCls}" style="width:${progPct}%"></div></div></td>
@@ -781,10 +903,7 @@ function renderCatalogo() {
 //  HISTÓRICO
 // ════════════════════════════════════════════
 function renderHistorico() {
-  const mesFiltro=document.getElementById('selMes').value;
-  const ano=new Date().getFullYear();
-  let dados=[...historico].sort((a,b)=>new Date(b.data)-new Date(a.data));
-  if(mesFiltro!=='all') dados=dados.filter(h=>{ const d=new Date(h.data+'T12:00:00'); return d.getMonth()+1===parseInt(mesFiltro)&&d.getFullYear()===ano; });
+  let dados=[...getHistoricoFiltrado()].sort((a,b)=>new Date(b.data)-new Date(a.data));
   if(!dados.length){ document.getElementById('tabelaHistorico').innerHTML='<tr><td colspan="8" class="hist-empty">Nenhuma compra neste período.</td></tr>'; return; }
   document.getElementById('tabelaHistorico').innerHTML=dados.map(h=>{
     const cat=CATALOGO.find(c=>c.id===h.itemId);
@@ -804,8 +923,29 @@ function renderHistorico() {
   }).join('');
 }
 
+function getMesFiltro() {
+  const v = document.getElementById('selMes').value;
+  return v === 'all' ? null : parseInt(v);
+}
+
+function getHistoricoFiltrado() {
+  const mes = getMesFiltro();
+  const ano = new Date().getFullYear();
+  if(!mes) return historico;
+  return historico.filter(h => {
+    const d = new Date(h.data+'T12:00:00');
+    return d.getMonth()+1 === mes && d.getFullYear() === ano;
+  });
+}
+
 function filtrarMes() {
-  if(document.querySelector('#panel-historico.active')) renderHistorico();
+  renderVisao();
+  const ativo = document.querySelector('.panel.active');
+  if(!ativo) return;
+  const id = ativo.id.replace('panel-','');
+  if(id==='historico')   renderHistorico();
+  if(id==='orcamento')   renderOrcamento();
+  if(id==='comparativo') renderComparativoInit();
 }
 
 async function removerCompra(id) {
